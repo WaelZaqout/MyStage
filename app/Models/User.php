@@ -1,0 +1,105 @@
+<?php
+
+namespace App\Models;
+
+use Illuminate\Foundation\Auth\User as Authenticatable;
+use Illuminate\Notifications\Notifiable;
+use Laravel\Cashier\Billable;
+use Spatie\Permission\Traits\HasRoles;
+use Illuminate\Database\Eloquent\Factories\HasFactory;
+
+class User extends Authenticatable
+{
+    use HasFactory, Notifiable, HasRoles, Billable;
+
+    protected $guard_name = 'web';
+
+    protected $fillable = [
+        'name',
+        'email',
+        'password',
+        'role',
+        'avatar',
+        'phone',
+        'country',
+    ];
+
+    protected $hidden = [
+        'password',
+        'remember_token',
+    ];
+
+    protected $casts = [
+        'email_verified_at' => 'datetime',
+        'password' => 'hashed',
+    ];
+
+    public function enrollments()
+    {
+        return $this->hasMany(Enrollment::class);
+    }
+
+    public function courses()
+    {
+        return $this->belongsToMany(Course::class, 'enrollments');
+    }
+
+    /**
+     * احصل على خطة الاشتراك النشطة
+     */
+    public function activePlan(): ?Plan
+    {
+        $subscription = $this->subscription('default');
+        if ($subscription && $subscription->active()) {
+            return Plan::where('stripe_price_id', $subscription->stripe_price)->first();
+        }
+        return null;
+    }
+
+    /**
+     * تحقق إذا للمستخدم اشتراك نشط
+     * وإذا انتهت الاشتراك يتم سحب صلاحيات المعلم تلقائيًا
+     */
+    public function hasActivePlan($role = null)
+    {
+        $subscription = $this->subscription('default');
+
+        // إذا الاشتراك موجود وانتهت صلاحيته
+        if ($subscription && !$subscription->active()) {
+            if ($this->role === 'teacher') {
+                $this->role = 'student'; // سحب صلاحيات المعلم
+                $this->save();
+            }
+            return false;
+        }
+
+        if ($role) {
+            return $this->role === $role && $subscription && $subscription->active();
+        }
+
+        return $subscription && $subscription->active();
+    }
+    public function hasActiveCourseSubscription($courseId): bool
+    {
+        return $this->subscriptions()
+            ->where('course_id', $courseId)
+            ->where('stripe_status', 'active')
+            ->where(function ($q) {
+                $q->whereNull('ends_at')->orWhere('ends_at', '>', now());
+            })
+            ->exists();
+    }
+    public static function teachers()
+    {
+        return self::where('role', 'teacher')->get();
+    }
+    public function publishedCourses()
+    {
+        return $this->courses()
+            ->whereNotNull('published_at');
+    }
+      public function isSubscribedToCourse($courseId)
+    {
+        return $this->courses()->where('course_id', $courseId)->exists();
+    }
+}
